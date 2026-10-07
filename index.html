@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f5f3f">
+  <title>Lista de Presentes</title>
+  <meta name="description" content="Lista de presentes do amigo secreto da família">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Presentes">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topo">
+    <button id="btnVoltar" class="icone" hidden aria-label="Voltar">‹</button>
+    <h1 id="titulo">🎁 Lista de Presentes</h1>
+    <button id="btnConvidar" class="icone texto" hidden>Convidar</button>
+  </header>
+
+  <main id="app"></main>
+
+  <dialog id="modal">
+    <div id="modalCorpo"></div>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
