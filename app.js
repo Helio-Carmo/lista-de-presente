@@ -126,16 +126,17 @@ async function ocupado(botao, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// API: listas no Firebase (Firestore) quando configurado; a busca de foto/preço
-// dos produtos ("preview") continua no Google Apps Script.
+// API: listas no Firebase (Firestore); a busca de foto/preço dos produtos
+// ("preview") fica no Google Apps Script.
 // ---------------------------------------------------------------------------
 
 const FIREBASE = (window.CONFIG && window.CONFIG.FIREBASE) || null;
-const usaFirebase = !!(FIREBASE && FIREBASE.projectId && FIREBASE.apiKey);
+const configurado = !!(FIREBASE && FIREBASE.projectId && FIREBASE.apiKey);
 
 async function api(action, dados = {}) {
-  if (usaFirebase && action !== 'preview') return firestore[action](dados);
-  return appsScript(action, dados);
+  if (action === 'preview') return appsScript(action, dados);
+  if (!configurado) throw new Error('Configure o FIREBASE no arquivo config.js');
+  return firestore[action](dados);
 }
 
 async function appsScript(action, dados) {
@@ -152,16 +153,28 @@ async function appsScript(action, dados) {
   return json.data;
 }
 
+// Chave secreta do amigo secreto: só quem sabe a senha consegue calcular.
+async function calcularChave(amigoId, senha) {
+  const bytes = new TextEncoder().encode(amigoId + ':' + String(senha).trim().toLowerCase());
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // Firestore pela API REST (sem precisar carregar a biblioteca do Firebase).
-// Estrutura: grupos/{id}, grupos/{id}/participantes/{nome em minúsculas}, grupos/{id}/presentes/{auto}
+// Estrutura:
+//   amigos/{amigoId}                 → só o nome (vitrine pública da tela inicial)
+//   listas/{chave}                   → chave = SHA-256(amigoId:senha); não dá para listar, só abrir sabendo a chave
+//   listas/{chave}/participantes/{nome em minúsculas}
+//   listas/{chave}/presentes/{auto}
 const firestore = (() => {
-  const base = () => `https://firestore.googleapis.com/v1/projects/${FIREBASE.projectId}/databases/(default)/documents`;
+  const raiz = () => `projects/${FIREBASE.projectId}/databases/(default)/documents`;
 
   async function req(metodo, caminho, corpo, params = []) {
     const q = new URLSearchParams([['key', FIREBASE.apiKey], ...params]);
+    const url = `https://firestore.googleapis.com/v1/${raiz()}${caminho.startsWith(':') ? '' : '/'}${caminho}?${q}`;
     let resp;
     try {
-      resp = await fetch(`${base()}/${caminho}?${q}`, {
+      resp = await fetch(url, {
         method: metodo,
         headers: corpo ? { 'Content-Type': 'application/json' } : undefined,
         body: corpo ? JSON.stringify(corpo) : undefined,
@@ -228,19 +241,41 @@ const firestore = (() => {
     };
   }
 
-  const g = id => 'grupos/' + encodeURIComponent(id);
+  const g = chave => 'listas/' + encodeURIComponent(chave);
 
   return {
     async listGroups() {
-      return (await listar('grupos')).reverse().map(x => ({ id: x.id, nome: x.nome }));
+      return (await listar('amigos')).reverse().map(x => ({ id: x.id, nome: x.nome }));
     },
 
-    async createGroup({ nome }) {
+    async createGroup({ nome, senha }) {
       nome = texto(nome, 60);
+      senha = String(senha || '').trim();
       if (!nome) throw new Error('Informe o nome do amigo secreto');
-      const id = slug(nome) + '-' + Math.random().toString(36).slice(2, 6);
-      await req('POST', 'grupos', documento({ nome, criadoEm: new Date() }), [['documentId', id]]);
-      return { id, nome };
+      if (senha.length < 4) throw new Error('A senha precisa ter pelo menos 4 caracteres');
+      const amigoId = slug(nome) + '-' + Math.random().toString(36).slice(2, 6);
+      const chave = await calcularChave(amigoId, senha);
+      const agora = new Date();
+      // Grava a vitrine e a lista juntas (ou nenhuma das duas).
+      const escrita = (caminho, obj) => ({ update: { name: raiz() + '/' + caminho, ...documento(obj) }, currentDocument: { exists: false } });
+      await req('POST', ':commit', {
+        writes: [
+          escrita('amigos/' + amigoId, { nome, criadoEm: agora }),
+          escrita(g(chave), { nome, amigoId, criadoEm: agora }),
+        ],
+      });
+      return { id: chave, amigoId, nome };
+    },
+
+    // Confere a senha: se a lista existe nesse endereço, a senha está certa.
+    async openGroup({ amigoId, senha }) {
+      const chave = await calcularChave(amigoId, senha);
+      try {
+        await req('GET', g(chave));
+      } catch (e) {
+        throw e.status === 404 ? new Error('Senha incorreta') : e;
+      }
+      return chave;
     },
 
     async getGroup({ grupoId }) {
@@ -248,14 +283,14 @@ const firestore = (() => {
       try {
         grupo = ler(await req('GET', g(grupoId)));
       } catch (e) {
-        throw e.status === 404 ? new Error('Amigo secreto não encontrado') : e;
+        throw e.status === 404 ? new Error('Amigo secreto não encontrado. Confira o link do convite.') : e;
       }
       const [participantes, presentes] = await Promise.all([
         listar(g(grupoId) + '/participantes'),
         listar(g(grupoId) + '/presentes'),
       ]);
       return {
-        grupo: { id: grupo.id, nome: grupo.nome },
+        grupo: { id: grupo.id, nome: grupo.nome, amigoId: grupo.amigoId },
         participantes: participantes.map(p => p.nome),
         presentes,
       };
@@ -350,11 +385,11 @@ async function telaInicio() {
   cache = { id: null, dados: null };
   cabecalho('🎁 Lista de Presentes', false);
 
-  if (!API_URL) {
+  if (!configurado) {
     $app.innerHTML = `<section class="cartao aviso">
       <h2>Quase lá!</h2>
-      <p>Falta conectar o site à Planilha Google. Siga o passo a passo do arquivo <b>README.md</b>
-      e cole a URL do Apps Script no arquivo <b>config.js</b>.</p></section>`;
+      <p>Falta conectar o site ao Firebase. Siga o passo a passo do arquivo <b>README.md</b>
+      e preencha o <b>config.js</b>.</p></section>`;
     return;
   }
 
@@ -368,19 +403,36 @@ async function telaInicio() {
     </section>
     <section class="cartao">
       <h2>Criar novo amigo secreto</h2>
-      <form id="fCriar" class="linha">
-        <input name="nome" required maxlength="60" placeholder="Ex: Natal Família 2026" aria-label="Nome do amigo secreto">
-        <button class="btn primario">Criar</button>
+      <form id="fCriar">
+        <label>Nome
+          <input name="nome" required maxlength="60" placeholder="Ex: Natal Família 2026">
+        </label>
+        <label>Senha para entrar
+          <input name="senha" required minlength="4" maxlength="60" autocomplete="off" placeholder="Mínimo 4 caracteres">
+        </label>
+        <p class="mudo">Quem receber o convite pelo botão <b>Convidar</b> entra direto, sem digitar a senha.</p>
+        <div class="botoes"><button class="btn primario">Criar amigo secreto</button></div>
       </form>
     </section>`;
 
   $('#fCriar').addEventListener('submit', e => {
     e.preventDefault();
     const nome = e.target.nome.value.trim();
-    ocupado(e.submitter || $('button', e.target), async () => {
-      const g = await api('createGroup', { nome });
+    const senha = e.target.senha.value;
+    ocupado($('button.primario', e.target), async () => {
+      const g = await api('createGroup', { nome, senha });
+      lembrarChave(g.amigoId, g.id);
       location.hash = linkGrupo(g.id);
     });
+  });
+
+  $('#grupos').addEventListener('click', e => {
+    const item = e.target.closest('[data-amigo]');
+    if (!item) return;
+    e.preventDefault();
+    const chave = (local.get('lp.chaves', {}) || {})[item.dataset.amigo];
+    if (chave) location.hash = linkGrupo(chave);
+    else modalSenha(item.dataset.amigo, item.dataset.nome);
   });
 
   try {
@@ -395,9 +447,45 @@ async function telaInicio() {
 }
 
 function htmlGrupos(grupos) {
+  const chaves = local.get('lp.chaves', {}) || {};
   return grupos.length
-    ? grupos.map(g => `<a class="item" href="${linkGrupo(g.id)}"><span>🎄 ${esc(g.nome)}</span><span class="seta">›</span></a>`).join('')
+    ? grupos.map(g => `<a class="item" href="#/" data-amigo="${esc(g.id)}" data-nome="${esc(g.nome)}">
+        <span>🎄 ${esc(g.nome)}</span><span class="seta">${chaves[g.id] ? '›' : '🔒'}</span></a>`).join('')
     : `<div class="vazio">Nenhum amigo secreto ainda. Crie o primeiro abaixo!</div>`;
+}
+
+// O celular lembra os amigos secretos já abertos, para não pedir a senha de novo.
+function lembrarChave(amigoId, chave) {
+  if (!amigoId) return;
+  const chaves = local.get('lp.chaves', {}) || {};
+  chaves[amigoId] = chave;
+  local.set('lp.chaves', chaves);
+}
+
+function modalSenha(amigoId, nome) {
+  abrirModal(`
+    <h2>🔒 ${esc(nome)}</h2>
+    <form id="fSenha">
+      <label>Senha
+        <input name="senha" required autocomplete="off" placeholder="Digite a senha do amigo secreto">
+      </label>
+      <p class="mudo">Não sabe a senha? Peça o link do convite para quem está no grupo.</p>
+      <div class="botoes">
+        <button type="button" class="btn" data-fechar>Cancelar</button>
+        <button class="btn primario">Entrar</button>
+      </div>
+    </form>`);
+  const f = $('#fSenha');
+  f.senha.focus();
+  f.addEventListener('submit', e => {
+    e.preventDefault();
+    ocupado($('button.primario', f), async () => {
+      const chave = await api('openGroup', { amigoId, senha: f.senha.value });
+      lembrarChave(amigoId, chave);
+      fecharModal();
+      location.hash = linkGrupo(chave);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +510,7 @@ async function telaGrupo(gid, pessoa) {
   try {
     const dados = await api('getGroup', { grupoId: gid });
     if (cache.id !== gid) return; // a pessoa já saiu desta tela
+    lembrarChave(dados.grupo.amigoId, gid);
     cache.dados = dados;
     guardarGrupo();
     renderGrupo();
@@ -430,6 +519,7 @@ async function telaGrupo(gid, pessoa) {
     if (cache.id !== gid) return;
     if (salvo) return toast('Sem conexão: mostrando a última versão salva');
     cache = { id: null, dados: null };
+    local.del('lp.ultimoGrupo');
     cabecalho('🎁 Lista de Presentes', true);
     $app.innerHTML = `<div class="vazio erro">${esc(e.message)}<br><br><a class="btn" href="#/">Voltar ao início</a></div>`;
   }
@@ -799,7 +889,7 @@ $('#btnVoltar').addEventListener('click', () => (location.hash = '#/'));
 $('#btnConvidar').addEventListener('click', async () => {
   if (!cache.dados) return;
   const url = location.origin + location.pathname + linkGrupo(cache.id);
-  const texto = `Entra no nosso amigo secreto "${cache.dados.grupo.nome}" e monta sua lista de presentes 🎁`;
+  const texto = `Entra no nosso amigo secreto "${cache.dados.grupo.nome}" e monta sua lista de presentes 🎁 (este link já entra direto, sem senha — não repasse fora da família)`;
   if (navigator.share) {
     try { await navigator.share({ title: cache.dados.grupo.nome, text: texto, url }); } catch (e) {}
     return;

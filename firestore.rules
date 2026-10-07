@@ -1,8 +1,10 @@
 rules_version = '2';
 
 // Regras do banco da Lista de Presentes.
-// Qualquer pessoa com o link pode ver e montar listas (é para a família),
-// mas só são aceitos dados no formato do app.
+//
+// amigos/{amigoId}  → vitrine pública: só o nome de cada amigo secreto.
+// listas/{chave}    → a chave é calculada a partir da senha. Ninguém consegue
+//                     listar as chaves; só abre quem sabe a senha ou recebeu o convite.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -27,10 +29,20 @@ service cloud.firestore {
         && d.criadoEm is timestamp;
     }
 
-    match /grupos/{grupoId} {
+    match /amigos/{amigoId} {
       allow read: if true;
       allow create: if request.resource.data.keys().hasOnly(['nome', 'criadoEm'])
         && texto(request.resource.data.nome, 1, 60)
+        && request.resource.data.criadoEm is timestamp;
+    }
+
+    match /listas/{chave} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if chave.matches('^[0-9a-f]{64}$')
+        && request.resource.data.keys().hasOnly(['nome', 'amigoId', 'criadoEm'])
+        && texto(request.resource.data.nome, 1, 60)
+        && existsAfter(/databases/$(database)/documents/amigos/$(request.resource.data.amigoId))
         && request.resource.data.criadoEm is timestamp;
 
       match /participantes/{participanteId} {
@@ -44,7 +56,7 @@ service cloud.firestore {
       match /presentes/{presenteId} {
         allow read: if true;
         allow create: if presenteValido(request.resource.data)
-          && exists(/databases/$(database)/documents/grupos/$(grupoId)/participantes/$(request.resource.data.participante.lower()));
+          && exists(/databases/$(database)/documents/listas/$(chave)/participantes/$(request.resource.data.participante.lower()));
         allow update: if presenteValido(request.resource.data)
           && request.resource.data.participante == resource.data.participante
           && request.resource.data.criadoEm == resource.data.criadoEm;
