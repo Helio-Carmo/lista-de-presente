@@ -160,6 +160,10 @@ async function calcularChave(amigoId, senha) {
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Prova para apagar o grupo: também vem da senha, mas é diferente da chave
+// (quem só tem o link do convite não consegue calcular).
+const calcularProva = (amigoId, senha) => calcularChave('apagar:' + amigoId, senha);
+
 // Firestore pela API REST (sem precisar carregar a biblioteca do Firebase).
 // Estrutura:
 //   amigos/{amigoId}                 → só o nome (vitrine pública da tela inicial)
@@ -242,29 +246,55 @@ const firestore = (() => {
   }
 
   const g = chave => 'listas/' + encodeURIComponent(chave);
+  const criar = (caminho, obj) => ({ update: { name: raiz() + '/' + caminho, ...documento(obj) }, currentDocument: { exists: false } });
+  const apagar = caminho => ({ delete: raiz() + '/' + caminho });
 
   return {
     async listGroups() {
-      return (await listar('amigos')).reverse().map(x => ({ id: x.id, nome: x.nome }));
+      return (await listar('amigos')).reverse().map(x => ({ id: x.id, nome: x.nome, criador: x.criador || '' }));
     },
 
-    async createGroup({ nome, senha }) {
+    async createGroup({ nome, senha, criador }) {
       nome = texto(nome, 60);
+      criador = texto(criador, 40);
       senha = String(senha || '').trim();
       if (!nome) throw new Error('Informe o nome do amigo secreto');
+      if (!criador) throw new Error('Informe seu nome');
       if (senha.length < 3) throw new Error('A senha precisa ter pelo menos 3 caracteres');
       const amigoId = slug(nome) + '-' + Math.random().toString(36).slice(2, 6);
       const chave = await calcularChave(amigoId, senha);
+      const prova = await calcularProva(amigoId, senha);
       const agora = new Date();
-      // Grava a vitrine e a lista juntas (ou nenhuma das duas).
-      const escrita = (caminho, obj) => ({ update: { name: raiz() + '/' + caminho, ...documento(obj) }, currentDocument: { exists: false } });
+      // Tudo junto (ou nada): vitrine, prova de quem criou, a lista e o criador como participante.
       await req('POST', ':commit', {
         writes: [
-          escrita('amigos/' + amigoId, { nome, criadoEm: agora }),
-          escrita(g(chave), { nome, amigoId, criadoEm: agora }),
+          criar('amigos/' + amigoId, { nome, criador, criadoEm: agora }),
+          criar('admin/' + prova, { amigoId }),
+          criar(g(chave), { nome, amigoId, criadoEm: agora }),
+          criar(g(chave) + '/participantes/' + criador.toLowerCase(), { nome: criador, criadoEm: agora }),
         ],
       });
-      return { id: chave, amigoId, nome };
+      return { id: chave, amigoId, nome, criador };
+    },
+
+    // Só quem sabe a senha consegue calcular a prova; a chave do convite não serve.
+    async deleteGroup({ grupoId, amigoId, senha }) {
+      if ((await calcularChave(amigoId, senha)) !== grupoId) throw new Error('Senha incorreta');
+      const prova = await calcularProva(amigoId, senha);
+      await req('POST', ':commit', {
+        writes: [{ update: { name: raiz() + '/apagamentos/' + amigoId, ...documento({ prova, criadoEm: new Date() }) } }],
+      });
+      const [participantes, presentes] = await Promise.all([
+        listar(g(grupoId) + '/participantes'),
+        listar(g(grupoId) + '/presentes'),
+      ]);
+      const itens = [
+        ...presentes.map(p => apagar(g(grupoId) + '/presentes/' + p.id)),
+        ...participantes.map(p => apagar(g(grupoId) + '/participantes/' + p.id)),
+      ];
+      for (let i = 0; i < itens.length; i += 400) await req('POST', ':commit', { writes: itens.slice(i, i + 400) });
+      await req('POST', ':commit', { writes: [apagar(g(grupoId)), apagar('amigos/' + amigoId)] });
+      return true;
     },
 
     // Confere a senha: se a lista existe nesse endereço, a senha está certa.
@@ -285,12 +315,13 @@ const firestore = (() => {
       } catch (e) {
         throw e.status === 404 ? new Error('Amigo secreto não encontrado. Confira o link do convite.') : e;
       }
-      const [participantes, presentes] = await Promise.all([
+      const [participantes, presentes, vitrine] = await Promise.all([
         listar(g(grupoId) + '/participantes'),
         listar(g(grupoId) + '/presentes'),
+        req('GET', 'amigos/' + encodeURIComponent(grupo.amigoId)).then(ler).catch(() => ({})),
       ]);
       return {
-        grupo: { id: grupo.id, nome: grupo.nome, amigoId: grupo.amigoId },
+        grupo: { id: grupo.id, nome: grupo.nome, amigoId: grupo.amigoId, criador: vitrine.criador || '' },
         participantes: participantes.map(p => p.nome),
         presentes,
       };
@@ -404,13 +435,17 @@ async function telaInicio() {
     <section class="cartao">
       <h2>Criar novo amigo secreto</h2>
       <form id="fCriar">
-        <label>Nome
+        <label>Nome do amigo secreto
           <input name="nome" required maxlength="60" placeholder="Ex: Natal Família 2026">
+        </label>
+        <label>Seu nome
+          <input name="criador" required maxlength="40" placeholder="Quem está criando" autocomplete="given-name">
         </label>
         <label>Senha para entrar
           <input name="senha" required minlength="3" maxlength="60" autocomplete="off" placeholder="Mínimo 3 caracteres">
         </label>
-        <p class="mudo">Quem receber o convite pelo botão <b>Convidar</b> entra direto, sem digitar a senha.</p>
+        <p class="mudo">Quem receber o convite pelo botão <b>Convidar</b> entra direto, sem digitar a senha.
+        Só você (quem criou) pode apagar o amigo secreto, e para isso precisa da senha.</p>
         <div class="botoes"><button class="btn primario">Criar amigo secreto</button></div>
       </form>
     </section>`;
@@ -419,10 +454,12 @@ async function telaInicio() {
     e.preventDefault();
     const nome = e.target.nome.value.trim();
     const senha = e.target.senha.value;
+    const criador = e.target.criador.value.trim();
     ocupado($('button.primario', e.target), async () => {
-      const g = await api('createGroup', { nome, senha });
+      const g = await api('createGroup', { nome, senha, criador });
       lembrarChave(g.amigoId, g.id);
-      location.hash = linkGrupo(g.id);
+      setEu(g.id, g.criador);
+      location.hash = linkGrupo(g.id, g.criador);
     });
   });
 
@@ -450,7 +487,8 @@ function htmlGrupos(grupos) {
   const chaves = local.get('lp.chaves', {}) || {};
   return grupos.length
     ? grupos.map(g => `<a class="item" href="#/" data-amigo="${esc(g.id)}" data-nome="${esc(g.nome)}">
-        <span>🎄 ${esc(g.nome)}</span><span class="seta">${chaves[g.id] ? '›' : '🔒'}</span></a>`).join('')
+        <span class="grupo-nome">🎄 ${esc(g.nome)}${g.criador ? `<small>criado por ${esc(g.criador)}</small>` : ''}</span>
+        <span class="seta">${chaves[g.id] ? '›' : '🔒'}</span></a>`).join('')
     : `<div class="vazio">Nenhum amigo secreto ainda. Crie o primeiro abaixo!</div>`;
 }
 
@@ -575,7 +613,49 @@ function renderGrupo() {
         ? 'Sua lista está vazia.<br>Toque em <b>+ Adicionar</b> ou compartilhe um produto da loja direto para este app.'
         : esc(sel) + ' ainda não adicionou presentes.'}</div>`;
 
+  const souCriador = eu && grupo.criador && eu.toLowerCase() === grupo.criador.toLowerCase();
+  if (souCriador) {
+    html += `<div class="zona-perigo">
+      <button class="btn pequeno perigo" data-acao="apagarGrupo">🗑️ Apagar amigo secreto</button>
+    </div>`;
+  }
+
   $app.innerHTML = html;
+}
+
+function modalApagarGrupo() {
+  const { grupo, participantes, presentes } = cache.dados;
+  abrirModal(`
+    <h2>Apagar "${esc(grupo.nome)}"?</h2>
+    <p class="faixa perigo">Isso apaga <b>para sempre</b> o amigo secreto, as ${participantes.length} lista(s)
+    e os ${presentes.length} presente(s). Não tem como desfazer.</p>
+    <form id="fApagar">
+      <label>Digite a senha do amigo secreto para confirmar
+        <input name="senha" required autocomplete="off">
+      </label>
+      <div class="botoes">
+        <button type="button" class="btn" data-fechar>Cancelar</button>
+        <button class="btn primario">Apagar para sempre</button>
+      </div>
+    </form>`);
+  const f = $('#fApagar');
+  f.senha.focus();
+  f.addEventListener('submit', e => {
+    e.preventDefault();
+    ocupado($('button.primario', f), async () => {
+      await api('deleteGroup', { grupoId: grupo.id, amigoId: grupo.amigoId, senha: f.senha.value });
+      // Esquece o grupo neste celular.
+      const chaves = local.get('lp.chaves', {}) || {};
+      delete chaves[grupo.amigoId];
+      local.set('lp.chaves', chaves);
+      local.del('lp.grupo.' + grupo.id);
+      local.del('lp.ultimoGrupo');
+      local.set('lp.grupos', (local.get('lp.grupos', []) || []).filter(x => x.id !== grupo.amigoId));
+      fecharModal();
+      location.hash = '#/';
+      toast('Amigo secreto apagado');
+    });
+  });
 }
 
 function cartaoPresente(p, minha) {
@@ -613,6 +693,7 @@ $app.addEventListener('click', e => {
   if (acao === 'entrar') modalEntrar();
   else if (acao === 'adicionar') modalAdicionar();
   else if (acao === 'atualizar') ocupado(alvo, recarregar);
+  else if (acao === 'apagarGrupo') modalApagarGrupo();
   else if (acao === 'editar') {
     const p = cache.dados.presentes.find(x => x.id === alvo.dataset.id);
     if (p) modalPresente(p, p.id);

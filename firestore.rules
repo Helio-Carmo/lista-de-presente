@@ -29,16 +29,54 @@ service cloud.firestore {
         && d.criadoEm is timestamp;
     }
 
+    // Foi pedido o apagamento deste amigo secreto (com a prova certa)?
+    function apagando(amigoId) {
+      return exists(/databases/$(database)/documents/apagamentos/$(amigoId));
+    }
+
     match /amigos/{amigoId} {
       allow read: if true;
-      allow create: if request.resource.data.keys().hasOnly(['nome', 'criadoEm'])
+      allow create: if request.resource.data.keys().hasOnly(['nome', 'criador', 'criadoEm'])
         && texto(request.resource.data.nome, 1, 60)
+        && texto(request.resource.data.criador, 1, 40)
         && request.resource.data.criadoEm is timestamp;
+      // Grupos antigos (de antes de existir "criador") podem receber um criador uma única vez.
+      allow update: if !('criador' in resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['criador'])
+        && texto(request.resource.data.criador, 1, 40);
+      allow delete: if apagando(amigoId);
+    }
+
+    // admin/{prova}: prova = SHA-256("apagar:" + amigoId + ":" + senha).
+    // Só é criada junto com o grupo (ou ao definir o criador de um grupo antigo). Ninguém lê.
+    match /admin/{prova} {
+      allow read: if false;
+      allow create: if prova.matches('^[0-9a-f]{64}$')
+        && request.resource.data.keys().hasOnly(['amigoId'])
+        && request.resource.data.amigoId is string
+        && (
+          (!exists(/databases/$(database)/documents/amigos/$(request.resource.data.amigoId))
+            && existsAfter(/databases/$(database)/documents/amigos/$(request.resource.data.amigoId)))
+          || (exists(/databases/$(database)/documents/amigos/$(request.resource.data.amigoId))
+            && !('criador' in get(/databases/$(database)/documents/amigos/$(request.resource.data.amigoId)).data)
+            && ('criador' in getAfter(/databases/$(database)/documents/amigos/$(request.resource.data.amigoId)).data))
+        );
+    }
+
+    // apagamentos/{amigoId}: para apagar, é preciso apresentar a prova (que só sai da senha).
+    match /apagamentos/{amigoId} {
+      allow read: if false;
+      allow create, update: if request.resource.data.keys().hasOnly(['prova', 'criadoEm'])
+        && request.resource.data.prova is string
+        && request.resource.data.prova.matches('^[0-9a-f]{64}$')
+        && exists(/databases/$(database)/documents/admin/$(request.resource.data.prova))
+        && get(/databases/$(database)/documents/admin/$(request.resource.data.prova)).data.amigoId == amigoId;
     }
 
     match /listas/{chave} {
       allow get: if true;
       allow list: if false;
+      allow delete: if apagando(resource.data.amigoId);
       allow create: if chave.matches('^[0-9a-f]{64}$')
         && request.resource.data.keys().hasOnly(['nome', 'amigoId', 'criadoEm'])
         && texto(request.resource.data.nome, 1, 60)
@@ -51,6 +89,7 @@ service cloud.firestore {
           && texto(request.resource.data.nome, 1, 40)
           && participanteId == request.resource.data.nome.lower()
           && request.resource.data.criadoEm is timestamp;
+        allow delete: if apagando(get(/databases/$(database)/documents/listas/$(chave)).data.amigoId);
       }
 
       match /presentes/{presenteId} {
