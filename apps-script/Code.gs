@@ -240,6 +240,18 @@ function previa_(url) {
       continue;
     }
     if (!pagina.html) continue;
+
+    // Link compartilhado pelo app do Mercado Livre (meli.la) cai no perfil de
+    // afiliado ("/social/..."), que não tem preço. O produto compartilhado é o
+    // primeiro card da página: segue o link dele.
+    const produtoML = produtoDoPerfilML_(pagina);
+    if (produtoML) {
+      try {
+        const doProduto = baixar_(produtoML, AGENTES[i]);
+        if (doProduto.html) pagina = doProduto;
+      } catch (err) {}
+    }
+
     r.urlFinal = pagina.url;
     r.loja = lojaDe_(pagina.url) || r.loja;
     const dados = extrair_(pagina.html, pagina.url);
@@ -251,6 +263,14 @@ function previa_(url) {
 
   if (r.precoOriginal && (!r.preco || r.precoOriginal <= r.preco)) r.precoOriginal = '';
   return r;
+}
+
+function produtoDoPerfilML_(pagina) {
+  if (!/mercadoli[bv]re\.com\.br\/social\//i.test(pagina.url)) return '';
+  const m = pagina.html.match(
+    /href="(https:\/\/(?:www\.mercadolivre\.com\.br\/[^"]*\/(?:up|p)\/MLB|produto\.mercadolivre\.com\.br\/MLB)[^"#]*)/i
+  );
+  return m ? decodificar_(m[1]) : '';
 }
 
 function baixar_(url, agente) {
