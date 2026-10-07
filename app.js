@@ -252,7 +252,7 @@ const firestore = (() => {
       nome = texto(nome, 60);
       senha = String(senha || '').trim();
       if (!nome) throw new Error('Informe o nome do amigo secreto');
-      if (senha.length < 4) throw new Error('A senha precisa ter pelo menos 4 caracteres');
+      if (senha.length < 3) throw new Error('A senha precisa ter pelo menos 3 caracteres');
       const amigoId = slug(nome) + '-' + Math.random().toString(36).slice(2, 6);
       const chave = await calcularChave(amigoId, senha);
       const agora = new Date();
@@ -408,7 +408,7 @@ async function telaInicio() {
           <input name="nome" required maxlength="60" placeholder="Ex: Natal Família 2026">
         </label>
         <label>Senha para entrar
-          <input name="senha" required minlength="4" maxlength="60" autocomplete="off" placeholder="Mínimo 4 caracteres">
+          <input name="senha" required minlength="3" maxlength="60" autocomplete="off" placeholder="Mínimo 3 caracteres">
         </label>
         <p class="mudo">Quem receber o convite pelo botão <b>Convidar</b> entra direto, sem digitar a senha.</p>
         <div class="botoes"><button class="btn primario">Criar amigo secreto</button></div>
