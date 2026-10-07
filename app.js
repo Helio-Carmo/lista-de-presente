@@ -983,6 +983,77 @@ $('#btnConvidar').addEventListener('click', async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Convite para instalar o app (o navegador não deixa forçar a janela dele,
+// então mostramos nosso próprio aviso assim que a instalação é possível)
+// ---------------------------------------------------------------------------
+
+let pedidoInstalacao = null;
+const ua = navigator.userAgent;
+const ehIOS = /iphone|ipad|ipod/i.test(ua) || (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
+const ehAndroid = /android/i.test(ua);
+const navegadorInterno = /; wv\)|FBAN|FBAV|Instagram|WhatsApp|Line\//i.test(ua);
+const jaInstalado = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+function avisoInstalar(html, comBotao) {
+  if (jaInstalado() || Date.now() < (local.get('lp.instalarDepois', 0) || 0)) return;
+  let el = $('#instalar');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'instalar';
+    el.setAttribute('role', 'dialog');
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `
+    <div class="instalar-icone">🎁</div>
+    <div class="instalar-texto">${html}</div>
+    ${comBotao ? '<button class="btn primario" data-instalar="sim">Instalar</button>' : ''}
+    <button class="icone-fechar" data-instalar="fechar" aria-label="Fechar">✕</button>`;
+}
+
+function fecharAvisoInstalar(adiar) {
+  const el = $('#instalar');
+  if (el) el.remove();
+  if (adiar) local.set('lp.instalarDepois', Date.now() + 2 * 24 * 3600 * 1000); // volta a aparecer em 2 dias
+}
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-instalar]');
+  if (!b) return;
+  if (b.dataset.instalar === 'fechar') return fecharAvisoInstalar(true);
+  if (!pedidoInstalacao) return;
+  pedidoInstalacao.prompt();
+  const { outcome } = await pedidoInstalacao.userChoice;
+  pedidoInstalacao = null;
+  fecharAvisoInstalar(outcome !== 'accepted');
+});
+
+// Android/Chrome: o navegador avisa quando dá para instalar.
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  pedidoInstalacao = e;
+  avisoInstalar('<b>Instale o app Presentes</b><br>Assim você adiciona produtos direto da Shopee e do Mercado Livre pelo botão Compartilhar.', true);
+});
+window.addEventListener('appinstalled', () => {
+  fecharAvisoInstalar(false);
+  toast('App instalado! Procure o ícone 🎁 na tela inicial.');
+});
+
+if (!jaInstalado()) {
+  if (navegadorInterno) {
+    avisoInstalar(ehIOS
+      ? '<b>Para instalar o app</b>, abra este link no <b>Safari</b>: toque em <b>⋯</b> ou <b>⬆️</b> e escolha “Abrir no Safari”.'
+      : '<b>Para instalar o app</b>, abra este link no <b>Chrome</b>: toque em <b>⋮</b> e escolha “Abrir no Chrome”.');
+  } else if (ehIOS) {
+    avisoInstalar('<b>Instale o app Presentes</b><br>Toque em <b>Compartilhar ⬆️</b> e depois em <b>“Adicionar à Tela de Início”</b>.');
+  } else if (ehAndroid) {
+    // Se o Chrome não oferecer a instalação (ou for outro navegador), ensina pelo menu.
+    setTimeout(() => {
+      if (!pedidoInstalacao) avisoInstalar('<b>Instale o app Presentes</b><br>Toque no menu <b>⋮</b> do navegador e escolha <b>“Instalar app”</b> ou <b>“Adicionar à tela inicial”</b>.');
+    }, 4000);
+  }
+}
+
 window.addEventListener('hashchange', rotear);
 lerCompartilhamento();
 rotear();
