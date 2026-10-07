@@ -178,6 +178,7 @@ label input { margin-top: 4px; font-weight: 400; }
 .faixa.acao { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 
 .quem { margin: 0 0 12px; color: var(--mudo); font-size: .9rem; }
+.rotulo { margin: 4px 0 8px; font-size: .85rem; font-weight: 600; color: var(--mudo); }
 .mudo { color: var(--mudo); font-size: .9rem; }
 .centro { text-align: center; }
 

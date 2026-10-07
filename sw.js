@@ -1,6 +1,6 @@
 // Service worker mínimo: permite instalar o app e abre offline com a última versão.
 // Sempre tenta a rede primeiro, para a família ver atualizações na hora.
-const CACHE = 'presentes-v1';
+const CACHE = 'presentes-v2';
 const ARQUIVOS = ['./', './index.html', './style.css', './app.js', './config.js', './manifest.webmanifest', './icons/icon-192.png'];
 
 self.addEventListener('install', e => {

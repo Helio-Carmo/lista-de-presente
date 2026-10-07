@@ -80,19 +80,27 @@ function lojaDe(url) {
 }
 
 // Extrai link, nome e preço de um texto compartilhado/colado, ex:
-// "Confira Fone Bluetooth por R$ 49,90 na Shopee! https://s.shopee.com.br/abc"
+// "Confira Fone Bluetooth por R$49,90. Encontre na Shopee agora! https://s.shopee.com.br/abc"
 function analisarTexto(texto) {
   texto = String(texto || '');
   const link = urlSegura((texto.match(/https?:\/\/[^\s"'<>]+/) || [])[0]);
   const preco = lerPreco((texto.match(/R\$\s*([\d.]+(?:,\d{1,2})?)/) || [])[1]);
   const titulo = texto
     .replace(/https?:\/\/\S+/g, '')
-    .replace(/R\$\s*[\d.,]+/g, '')
+    .replace(/\s*(?:por\s+)?R\$\s*[\d.,]*\d/gi, '')
+    .replace(/(encontre|compre|veja)\s+(isso\s+)?na\s+shopee[^.!]*[.!]?/gi, '')
+    .replace(/\s+na\s+shopee\s*[!.]?/gi, '')
+    .replace(/^\s*(confira|olha|veja)\s*(isso|só)?\s*[:!-]?\s*/i, '')
     .replace(/\s+/g, ' ')
+    .replace(/[\s.!,:-]+$/, '')
     .trim()
     .slice(0, 200);
   return { link, preco, titulo };
 }
+
+// A Shopee bloqueia a leitura pelos servidores do Google: nem vale a pena tentar
+// (só gastaria ~8s). Usamos o nome e o preço que vêm no texto compartilhado.
+const ehShopee = link => lojaDe(link) === 'Shopee';
 
 let timerToast;
 function toast(msg) {
@@ -154,6 +162,12 @@ function euNoGrupo() {
   return cache.dados.participantes.includes(eu) ? eu : '';
 }
 
+// Cópia das listas no celular: a tela abre na hora com o que já foi visto
+// e a planilha (que leva ~2s para responder) atualiza por trás.
+function guardarGrupo() {
+  if (cache.id && cache.dados) local.set('lp.grupo.' + cache.id, cache.dados);
+}
+
 const linkGrupo = (gid, pessoa) =>
   '#/g/' + encodeURIComponent(gid) + (pessoa ? '/' + encodeURIComponent(pessoa) : '');
 
@@ -191,11 +205,12 @@ async function telaInicio() {
   }
 
   const pendente = sessao.get('lp.pendente');
+  const salvos = local.get('lp.grupos');
   $app.innerHTML = `
     ${pendente ? `<div class="faixa">Escolha o amigo secreto onde quer adicionar o presente 👇</div>` : ''}
     <section>
       <h2 class="secao">Amigos secretos</h2>
-      <div id="grupos" class="lista"><div class="carregando">Carregando…</div></div>
+      <div id="grupos" class="lista">${salvos ? htmlGrupos(salvos) : '<div class="carregando">Carregando…</div>'}</div>
     </section>
     <section class="cartao">
       <h2>Criar novo amigo secreto</h2>
@@ -216,15 +231,19 @@ async function telaInicio() {
 
   try {
     const grupos = await api('listGroups');
+    local.set('lp.grupos', grupos);
     const $g = $('#grupos');
-    if (!$g) return;
-    $g.innerHTML = grupos.length
-      ? grupos.map(g => `<a class="item" href="${linkGrupo(g.id)}"><span>🎄 ${esc(g.nome)}</span><span class="seta">›</span></a>`).join('')
-      : `<div class="vazio">Nenhum amigo secreto ainda. Crie o primeiro abaixo!</div>`;
+    if ($g) $g.innerHTML = htmlGrupos(grupos);
   } catch (e) {
     const $g = $('#grupos');
-    if ($g) $g.innerHTML = `<div class="vazio erro">${esc(e.message)}</div>`;
+    if ($g && !salvos) $g.innerHTML = `<div class="vazio erro">${esc(e.message)}</div>`;
   }
+}
+
+function htmlGrupos(grupos) {
+  return grupos.length
+    ? grupos.map(g => `<a class="item" href="${linkGrupo(g.id)}"><span>🎄 ${esc(g.nome)}</span><span class="seta">›</span></a>`).join('')
+    : `<div class="vazio">Nenhum amigo secreto ainda. Crie o primeiro abaixo!</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,25 +253,40 @@ async function telaInicio() {
 async function telaGrupo(gid, pessoa) {
   pessoaDaRota = pessoa;
   local.set('lp.ultimoGrupo', gid);
-  if (cache.id !== gid) {
-    cabecalho('Carregando…', true);
-    $app.innerHTML = `<div class="carregando">Carregando listas…</div>`;
-    try {
-      cache = { id: gid, dados: await api('getGroup', { grupoId: gid }) };
-    } catch (e) {
-      cabecalho('🎁 Lista de Presentes', true);
-      $app.innerHTML = `<div class="vazio erro">${esc(e.message)}<br><br><a class="btn" href="#/">Voltar ao início</a></div>`;
-      return;
-    }
+  if (cache.id === gid) return renderGrupo();
+
+  const salvo = local.get('lp.grupo.' + gid);
+  cache = { id: gid, dados: salvo || null };
+  if (salvo) {
     renderGrupo();
     tratarCompartilhamento();
-    return;
+  } else {
+    cabecalho('Carregando…', true);
+    $app.innerHTML = `<div class="carregando">Carregando listas…</div>`;
   }
-  renderGrupo();
+
+  try {
+    const dados = await api('getGroup', { grupoId: gid });
+    if (cache.id !== gid) return; // a pessoa já saiu desta tela
+    cache.dados = dados;
+    guardarGrupo();
+    renderGrupo();
+    if (!salvo) tratarCompartilhamento();
+  } catch (e) {
+    if (cache.id !== gid) return;
+    if (salvo) return toast('Sem conexão: mostrando a última versão salva');
+    cache = { id: null, dados: null };
+    cabecalho('🎁 Lista de Presentes', true);
+    $app.innerHTML = `<div class="vazio erro">${esc(e.message)}<br><br><a class="btn" href="#/">Voltar ao início</a></div>`;
+  }
 }
 
 async function recarregar() {
-  cache.dados = await api('getGroup', { grupoId: cache.id });
+  const gid = cache.id;
+  const dados = await api('getGroup', { grupoId: gid });
+  if (cache.id !== gid) return;
+  cache.dados = dados;
+  guardarGrupo();
   renderGrupo();
 }
 
@@ -276,7 +310,8 @@ function renderGrupo() {
 
   const qtd = nome => presentes.filter(p => p.participante === nome).length;
   const ordem = eu ? [eu, ...participantes.filter(n => n !== eu)] : participantes;
-  html += `<nav class="chips">${ordem
+  html += `<p class="rotulo">👇 Toque num nome para ver a lista da pessoa</p>
+    <nav class="chips">${ordem
     .map(n => `<a class="chip${n === sel ? ' ativo' : ''}" href="${linkGrupo(grupo.id, n)}">${esc(n)}${n === eu ? ' (você)' : ''}<span class="qtd">${qtd(n)}</span></a>`)
     .join('')}</nav>`;
 
@@ -342,8 +377,10 @@ $app.addEventListener('click', e => {
     if (p && confirm(`Excluir "${p.titulo}" da sua lista?`)) {
       ocupado(alvo, async () => {
         await api('deleteGift', { id: p.id });
+        cache.dados.presentes = cache.dados.presentes.filter(x => x.id !== p.id);
+        guardarGrupo();
+        renderGrupo();
         toast('Presente excluído');
-        await recarregar();
       });
     }
   }
@@ -404,7 +441,8 @@ function modalEntrar() {
     const nome = e.target.nome.value.trim();
     ocupado($('button.primario', e.target), async () => {
       const salvo = await api('joinGroup', { grupoId: grupo.id, nome });
-      cache.dados = await api('getGroup', { grupoId: grupo.id });
+      if (!cache.dados.participantes.includes(salvo)) cache.dados.participantes.push(salvo);
+      guardarGrupo();
       pessoaDaRota = salvo;
       virar(salvo);
     });
@@ -474,6 +512,9 @@ function modalAdicionar(dica = {}) {
 }
 
 async function buscarPrevia(link, pistas) {
+  if (ehShopee(link)) {
+    return { link, titulo: pistas.titulo || '', preco: pistas.preco || '', loja: 'Shopee', incompleto: !pistas.titulo || !pistas.preco };
+  }
   try {
     const d = await api('preview', { url: link });
     return {
@@ -550,11 +591,17 @@ function modalPresente(d, id) {
       loja: link === d.link && d.loja ? d.loja : lojaDe(link),
     };
     ocupado($('button.primario', f), async () => {
-      if (id) await api('updateGift', { id, ...dados });
-      else await api('addGift', { grupoId: cache.id, participante: euNoGrupo(), ...dados });
+      if (id) {
+        await api('updateGift', { id, ...dados });
+        const p = cache.dados.presentes.find(x => x.id === id);
+        if (p) Object.assign(p, dados, { preco: dados.preco || null, precoOriginal: dados.precoOriginal || null });
+      } else {
+        cache.dados.presentes.push(await api('addGift', { grupoId: cache.id, participante: euNoGrupo(), ...dados }));
+      }
+      guardarGrupo();
       fecharModal();
+      renderGrupo();
       toast(id ? 'Presente atualizado' : 'Presente adicionado! 🎁');
-      await recarregar();
     });
   });
 }
