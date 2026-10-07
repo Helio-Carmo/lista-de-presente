@@ -126,10 +126,19 @@ async function ocupado(botao, fn) {
 }
 
 // ---------------------------------------------------------------------------
-// API (Google Apps Script)
+// API: listas no Firebase (Firestore) quando configurado; a busca de foto/preço
+// dos produtos ("preview") continua no Google Apps Script.
 // ---------------------------------------------------------------------------
 
+const FIREBASE = (window.CONFIG && window.CONFIG.FIREBASE) || null;
+const usaFirebase = !!(FIREBASE && FIREBASE.projectId && FIREBASE.apiKey);
+
 async function api(action, dados = {}) {
+  if (usaFirebase && action !== 'preview') return firestore[action](dados);
+  return appsScript(action, dados);
+}
+
+async function appsScript(action, dados) {
   if (!API_URL) throw new Error('Configure a API_URL no arquivo config.js');
   let resp;
   try {
@@ -142,6 +151,151 @@ async function api(action, dados = {}) {
   if (!json.ok) throw new Error(json.error || 'Erro na planilha');
   return json.data;
 }
+
+// Firestore pela API REST (sem precisar carregar a biblioteca do Firebase).
+// Estrutura: grupos/{id}, grupos/{id}/participantes/{nome em minúsculas}, grupos/{id}/presentes/{auto}
+const firestore = (() => {
+  const base = () => `https://firestore.googleapis.com/v1/projects/${FIREBASE.projectId}/databases/(default)/documents`;
+
+  async function req(metodo, caminho, corpo, params = []) {
+    const q = new URLSearchParams([['key', FIREBASE.apiKey], ...params]);
+    let resp;
+    try {
+      resp = await fetch(`${base()}/${caminho}?${q}`, {
+        method: metodo,
+        headers: corpo ? { 'Content-Type': 'application/json' } : undefined,
+        body: corpo ? JSON.stringify(corpo) : undefined,
+      });
+    } catch (e) {
+      throw new Error('Sem conexão. Verifique sua internet.');
+    }
+    const json = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const erro = new Error((json.error && json.error.message) || 'Erro no banco de dados');
+      erro.status = resp.status;
+      throw erro;
+    }
+    return json;
+  }
+
+  const valor = v =>
+    v == null ? { nullValue: null }
+    : v instanceof Date ? { timestampValue: v.toISOString() }
+    : typeof v === 'number' ? { doubleValue: v }
+    : { stringValue: String(v) };
+
+  const documento = obj => ({ fields: Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, valor(v)])) });
+
+  function ler(doc) {
+    const o = { id: doc.name.split('/').pop() };
+    for (const [k, v] of Object.entries(doc.fields || {})) {
+      o[k] = 'stringValue' in v ? v.stringValue
+        : 'doubleValue' in v ? v.doubleValue
+        : 'integerValue' in v ? Number(v.integerValue)
+        : 'timestampValue' in v ? v.timestampValue
+        : null;
+    }
+    return o;
+  }
+
+  async function listar(caminho) {
+    const docs = [];
+    let pagina = '';
+    do {
+      const params = [['pageSize', '300']];
+      if (pagina) params.push(['pageToken', pagina]);
+      const r = await req('GET', caminho, null, params);
+      docs.push(...(r.documents || []).map(ler));
+      pagina = r.nextPageToken;
+    } while (pagina);
+    return docs.sort((a, b) => String(a.criadoEm).localeCompare(String(b.criadoEm)));
+  }
+
+  const texto = (v, max) => String(v == null ? '' : v).replace(/\//g, '-').replace(/\s+/g, ' ').trim().slice(0, max);
+  const slug = s =>
+    s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'grupo';
+
+  function camposPresente(d) {
+    return {
+      titulo: texto(d.titulo, 200),
+      imagem: urlSegura(d.imagem).slice(0, 2000),
+      preco: Number(d.preco) || null,
+      precoOriginal: Number(d.precoOriginal) || null,
+      link: urlSegura(d.link).slice(0, 2000),
+      loja: texto(d.loja, 40),
+      observacao: texto(d.observacao, 200),
+    };
+  }
+
+  const g = id => 'grupos/' + encodeURIComponent(id);
+
+  return {
+    async listGroups() {
+      return (await listar('grupos')).reverse().map(x => ({ id: x.id, nome: x.nome }));
+    },
+
+    async createGroup({ nome }) {
+      nome = texto(nome, 60);
+      if (!nome) throw new Error('Informe o nome do amigo secreto');
+      const id = slug(nome) + '-' + Math.random().toString(36).slice(2, 6);
+      await req('POST', 'grupos', documento({ nome, criadoEm: new Date() }), [['documentId', id]]);
+      return { id, nome };
+    },
+
+    async getGroup({ grupoId }) {
+      let grupo;
+      try {
+        grupo = ler(await req('GET', g(grupoId)));
+      } catch (e) {
+        throw e.status === 404 ? new Error('Amigo secreto não encontrado') : e;
+      }
+      const [participantes, presentes] = await Promise.all([
+        listar(g(grupoId) + '/participantes'),
+        listar(g(grupoId) + '/presentes'),
+      ]);
+      return {
+        grupo: { id: grupo.id, nome: grupo.nome },
+        participantes: participantes.map(p => p.nome),
+        presentes,
+      };
+    },
+
+    async joinGroup({ grupoId, nome }) {
+      nome = texto(nome, 40);
+      if (!nome) throw new Error('Informe seu nome');
+      const id = nome.toLowerCase();
+      try {
+        await req('POST', g(grupoId) + '/participantes', documento({ nome, criadoEm: new Date() }), [['documentId', id]]);
+        return nome;
+      } catch (e) {
+        if (e.status !== 409) throw e; // 409 = já existe alguém com esse nome
+        return ler(await req('GET', g(grupoId) + '/participantes/' + encodeURIComponent(id))).nome;
+      }
+    },
+
+    async addGift(d) {
+      const campos = camposPresente(d);
+      if (!campos.titulo) throw new Error('Informe o nome do produto');
+      const doc = documento({ ...campos, participante: d.participante, criadoEm: new Date() });
+      return ler(await req('POST', g(d.grupoId) + '/presentes', doc));
+    },
+
+    async updateGift(d) {
+      const campos = camposPresente(d);
+      if (!campos.titulo) throw new Error('Informe o nome do produto');
+      const mascara = Object.keys(campos).map(k => ['updateMask.fieldPaths', k]);
+      mascara.push(['currentDocument.exists', 'true']);
+      await req('PATCH', g(d.grupoId) + '/presentes/' + encodeURIComponent(d.id), documento(campos), mascara);
+      return true;
+    },
+
+    async deleteGift(d) {
+      await req('DELETE', g(d.grupoId) + '/presentes/' + encodeURIComponent(d.id));
+      return true;
+    },
+  };
+})();
 
 // ---------------------------------------------------------------------------
 // Estado
@@ -376,7 +530,7 @@ $app.addEventListener('click', e => {
     const p = cache.dados.presentes.find(x => x.id === alvo.dataset.id);
     if (p && confirm(`Excluir "${p.titulo}" da sua lista?`)) {
       ocupado(alvo, async () => {
-        await api('deleteGift', { id: p.id });
+        await api('deleteGift', { grupoId: cache.id, id: p.id });
         cache.dados.presentes = cache.dados.presentes.filter(x => x.id !== p.id);
         guardarGrupo();
         renderGrupo();
@@ -592,7 +746,7 @@ function modalPresente(d, id) {
     };
     ocupado($('button.primario', f), async () => {
       if (id) {
-        await api('updateGift', { id, ...dados });
+        await api('updateGift', { grupoId: cache.id, id, ...dados });
         const p = cache.dados.presentes.find(x => x.id === id);
         if (p) Object.assign(p, dados, { preco: dados.preco || null, precoOriginal: dados.precoOriginal || null });
       } else {

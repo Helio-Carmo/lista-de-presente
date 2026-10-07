@@ -43,6 +43,25 @@ e todo mundo pode ver as listas de todos.
 5. Depois de 1 ou 2 minutos, o site estará em:
    `https://SEU-USUARIO.github.io/lista-de-presente/`
 
+## Opcional — Firebase (deixa as listas bem mais rápidas)
+
+A planilha leva ~2 s para responder cada consulta. Com o Firebase (Firestore), as listas
+ficam num banco de dados rápido; o Apps Script continua sendo usado só para buscar foto e preço.
+
+1. Acesse [console.firebase.google.com](https://console.firebase.google.com) → **Criar projeto** → nome `lista-de-presente` → pode desativar o Google Analytics.
+2. No menu lateral: **Criação → Firestore Database → Criar banco de dados**.
+   Local: **southamerica-east1 (São Paulo)**. Modo: **produção**.
+3. Na aba **Regras**, apague tudo, cole o conteúdo de [`firestore.rules`](firestore.rules) e clique em **Publicar**.
+4. Clique na engrenagem ⚙️ → **Configurações do projeto** → em "Seus apps", clique no ícone **`</>`** (Web),
+   dê o nome `lista-de-presente` (não marque Firebase Hosting) e registre.
+5. Copie o `apiKey` e o `projectId` e coloque no [`config.js`](config.js):
+
+   ```js
+   FIREBASE: { apiKey: 'AIza…', projectId: 'lista-de-presente-xxxx' },
+   ```
+
+> A `apiKey` do Firebase não é secreta: ela só identifica o projeto. Quem protege os dados são as regras do passo 3.
+
 ## Passo 3 — Usar
 
 1. Abra o site, crie o amigo secreto (ex: "Natal Família 2026").
