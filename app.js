@@ -797,7 +797,8 @@ function modalAdicionar(dica = {}) {
       <summary>Como pegar o link do produto?</summary>
       <p><b>Android:</b> no app da Shopee, Mercado Livre etc., abra o produto, toque em
       <b>Compartilhar</b> e escolha <b>Presentes</b>. Ele cai direto aqui!</p>
-      <p><b>iPhone:</b> no app da loja, toque em <b>Compartilhar → Copiar link</b>, volte aqui e toque em <b>📋 Colar</b>.</p>
+      <p><b>iPhone:</b> no app da loja, toque em <b>Compartilhar</b>, copie, volte aqui e toque em <b>📋 Colar</b>.
+      Na <b>Shopee</b>, use <b>Compartilhar → Mais → Copiar</b> (o “Copiar link” sozinho não traz nome nem preço).</p>
       <p class="mudo">Se “Presentes” não aparecer no Android, instale o app pelo menu do Chrome (⋮ → Instalar app).</p>
     </details>
     <p class="centro"><button type="button" class="link" id="btnManual">Adicionar sem link</button></p>`);
@@ -871,7 +872,11 @@ function modalPresente(d, id) {
     <h2>${id ? 'Editar presente' : 'Confirme o presente'}</h2>
     <form id="fPresente">
       <div class="previa"></div>
-      ${!id && d.incompleto ? '<p class="faixa">Não consegui ler tudo dessa loja automaticamente. Complete abaixo 🙂</p>' : ''}
+      ${!id && d.incompleto ? (d.loja === 'Shopee'
+        ? `<p class="faixa">A Shopee não deixa o app ler nome e preço só pelo link. Complete abaixo, ou da próxima vez
+           use o <b>Compartilhar</b> da Shopee: no Android escolha <b>Presentes</b>; no iPhone toque em
+           <b>Mais → Copiar</b> (não em “Copiar link”). Assim o nome e o preço vêm junto.</p>`
+        : '<p class="faixa">Não consegui ler tudo dessa loja automaticamente. Complete abaixo 🙂</p>') : ''}
       <label>Nome do produto
         <input name="titulo" required maxlength="200">
       </label>
