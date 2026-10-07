@@ -841,7 +841,16 @@ async function buscarPrevia(link, pistas) {
     return { link, titulo: pistas.titulo || '', preco: pistas.preco || '', loja: 'Shopee', incompleto: !pistas.titulo || !pistas.preco };
   }
   try {
-    const d = await api('preview', { url: link });
+    // O Google às vezes devolve uma página de erro em vez dos dados: tenta de novo.
+    let d;
+    for (let tentativa = 1; ; tentativa++) {
+      try {
+        d = await api('preview', { url: link });
+        if (d.preco || tentativa >= 2) break;
+      } catch (e) {
+        if (tentativa >= 2) throw e;
+      }
+    }
     return {
       link,
       titulo: d.titulo || pistas.titulo || '',
